@@ -4,264 +4,257 @@ import requests
 import math
 from datetime import datetime, timedelta
 
-# --- CONFIGURAZIONE ---
-st.set_page_config(page_title="Pro Football Analyst V3", layout="wide", page_icon="📈")
+# --- CONFIGURAZIONE STILE ---
+st.set_page_config(page_title="AI Bet Master V4", layout="wide", page_icon="⚽")
 
-# --- FUNZIONI MATEMATICHE (POISSON) ---
+# CSS Personalizzato per rendere l'interfaccia "Carina"
+st.markdown("""
+<style>
+    .big-font { font-size:20px !important; font-weight: bold; }
+    .metric-card { background-color: #f0f2f6; padding: 15px; border-radius: 10px; text-align: center; }
+    .best-bet { background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px; border: 1px solid #c3e6cb; text-align: center; font-weight: bold;}
+</style>
+""", unsafe_allow_html=True)
 
-def poisson_probability(k, lamb):
-    """Calcola la probabilità che accadano k eventi dato un valore atteso lamb."""
+# --- MOTORE MATEMATICO (POISSON MATRIX) ---
+
+def poisson(k, lamb):
     return (lamb**k * math.exp(-lamb)) / math.factorial(k)
 
-def calcola_probabilita_esatte(xg_home, xg_away):
+def genera_matrice_probabilita(xg_home, xg_away):
     """
-    Simula tutti i possibili risultati (fino a 6-6) usando Poisson
-    per derivare le percentuali reali di 1X2, Over, Goal.
+    Crea un dizionario con TUTTE le scommesse possibili e le loro probabilità reali
+    basate sulla somma dei risultati esatti.
     """
-    prob_home_win = 0
-    prob_draw = 0
-    prob_away_win = 0
-    prob_over_2_5 = 0
-    prob_btts = 0 # Both Teams To Score
-    
-    # Simuliamo punteggi da 0-0 a 6-6
-    for h in range(7):
-        for a in range(7):
-            p = poisson_probability(h, xg_home) * poisson_probability(a, xg_away)
-            
-            # Accumula probabilità 1X2
-            if h > a: prob_home_win += p
-            elif h == a: prob_draw += p
-            else: prob_away_win += p
-            
-            # Accumula probabilità Over 2.5
-            if (h + a) > 2.5: prob_over_2_5 += p
-            
-            # Accumula BTTS (Goal)
-            if h > 0 and a > 0: prob_btts += p
-
-    return {
-        "1": prob_home_win * 100,
-        "X": prob_draw * 100,
-        "2": prob_away_win * 100,
-        "Over2.5": prob_over_2_5 * 100,
-        "Under2.5": (1 - prob_over_2_5) * 100,
-        "Goal": prob_btts * 100,
-        "NoGoal": (1 - prob_btts) * 100
+    markets = {
+        "1": 0, "X": 0, "2": 0,
+        "Over 1.5": 0, "Under 1.5": 0,
+        "Over 2.5": 0, "Under 2.5": 0,
+        "Goal (GG)": 0, "NoGoal (NG)": 0,
+        "1 + Over 1.5": 0, "1 + Under 3.5": 0, "1X + Over 1.5": 0,
+        "2 + Over 1.5": 0, "X2 + Under 3.5": 0,
+        "MG 1-3": 0, "MG 2-4": 0, "MG 2-5": 0,
+        "Casa MG 1-2": 0, "Casa MG 1-3": 0,
+        "Ospite MG 1-2": 0, "Ospite MG 1-3": 0
     }
 
-# --- GESTIONE API E DATI ---
+    # Analizziamo risultati fino a 9-9 per massima precisione
+    for h in range(10):
+        for a in range(10):
+            prob = poisson(h, xg_home) * poisson(a, xg_away)
+            total_goals = h + a
+            
+            # 1X2
+            if h > a: markets["1"] += prob
+            elif h == a: markets["X"] += prob
+            else: markets["2"] += prob
+            
+            # Under/Over
+            if total_goals > 1.5: markets["Over 1.5"] += prob
+            else: markets["Under 1.5"] += prob
+            
+            if total_goals > 2.5: markets["Over 2.5"] += prob
+            else: markets["Under 2.5"] += prob
+            
+            # Goal/NoGoal
+            if h > 0 and a > 0: markets["Goal (GG)"] += prob
+            else: markets["NoGoal (NG)"] += prob
+            
+            # MULTIGOAL
+            if 1 <= total_goals <= 3: markets["MG 1-3"] += prob
+            if 2 <= total_goals <= 4: markets["MG 2-4"] += prob
+            if 2 <= total_goals <= 5: markets["MG 2-5"] += prob
+            
+            # MULTIGOAL SQUADRE
+            if 1 <= h <= 2: markets["Casa MG 1-2"] += prob
+            if 1 <= h <= 3: markets["Casa MG 1-3"] += prob
+            if 1 <= a <= 2: markets["Ospite MG 1-2"] += prob
+            if 1 <= a <= 3: markets["Ospite MG 1-3"] += prob
+            
+            # COMBO (La parte difficile!)
+            # 1 + Over 1.5
+            if h > a and total_goals > 1.5: markets["1 + Over 1.5"] += prob
+            # 1 + Under 3.5
+            if h > a and total_goals < 3.5: markets["1 + Under 3.5"] += prob
+            # 1X + Over 1.5
+            if h >= a and total_goals > 1.5: markets["1X + Over 1.5"] += prob
+            # 2 + Over 1.5
+            if a > h and total_goals > 1.5: markets["2 + Over 1.5"] += prob
+            # X2 + Under 3.5
+            if a >= h and total_goals < 3.5: markets["X2 + Under 3.5"] += prob
+
+    # Converti in percentuali
+    return {k: v * 100 for k, v in markets.items()}
+
+# --- API E DATI ---
 
 @st.cache_data(ttl=3600)
-def get_standings(api_key, competition_id):
-    url = f"https://api.football-data.org/v4/competitions/{competition_id}/standings"
+def get_data(api_key, date_obj):
     headers = {'X-Auth-Token': api_key}
-    try:
-        response = requests.get(url, headers=headers)
-        data = response.json()
-        teams_stats = {}
-        if 'standings' in data and len(data['standings']) > 0:
-            table = data['standings'][0]['table']
-            for row in table:
-                team_id = row['team']['id']
-                teams_stats[team_id] = {
-                    'played': row['playedGames'],
-                    'gf': row['goalsFor'],
-                    'ga': row['goalsAgainst'],
-                    'form_str': row.get('form', '')
-                }
-        return teams_stats
-    except:
-        return {}
-
-def get_matches_by_date(api_key, date_obj):
-    """Scarica le partite per una data specifica."""
+    
+    # 1. Scarica Partite
     date_str = date_obj.strftime("%Y-%m-%d")
-    date_to = (date_obj + timedelta(days=1)).strftime("%Y-%m-%d") # Prende una finestra di 1 giorno extra per sicurezza
+    d_to = (date_obj + timedelta(days=1)).strftime("%Y-%m-%d")
+    url_m = f"https://api.football-data.org/v4/matches?dateFrom={date_str}&dateTo={d_to}"
     
-    url = f"https://api.football-data.org/v4/matches?dateFrom={date_str}&dateTo={date_to}"
-    headers = {'X-Auth-Token': api_key}
-    
+    matches = []
     try:
-        response = requests.get(url, headers=headers)
-        return response.json().get('matches', [])
-    except:
-        return []
+        resp = requests.get(url_m, headers=headers)
+        matches = resp.json().get('matches', [])
+    except: return [], {}
 
-def calculate_form_modifier(form_str):
-    """Calcola un moltiplicatore basato sulla forma recente (W=Win, L=Loss)."""
-    if not form_str: return 1.0
-    
-    score = 1.0
-    # Analizza le ultime 5 partite (l'API le dà come stringa "W,L,D...")
-    recent = form_str.split(',')[-5:] 
-    for result in recent:
-        if result == 'W': score += 0.05  # +5% forza per vittoria
-        elif result == 'L': score -= 0.05 # -5% forza per sconfitta
-    return score
+    if not matches: return [], {}
 
-def analyze_match_advanced(home_id, away_id, standings):
-    """Analisi accurata basata su dati storici e Poisson."""
+    # 2. Scarica Classifiche (Solo quelle necessarie)
+    comp_ids = set([m['competition']['id'] for m in matches])
+    standings = {}
     
-    # Recupera stats o usa valori medi di default
-    h_stats = standings.get(home_id, {'played': 1, 'gf': 1.2, 'ga': 1.2, 'form_str': ''})
-    a_stats = standings.get(away_id, {'played': 1, 'gf': 1.0, 'ga': 1.0, 'form_str': ''})
-    
-    h_played = max(h_stats['played'], 1)
-    a_played = max(a_stats['played'], 1)
+    for cid in comp_ids:
+        try:
+            url_s = f"https://api.football-data.org/v4/competitions/{cid}/standings"
+            resp_s = requests.get(url_s, headers=headers).json()
+            if 'standings' in resp_s:
+                table = resp_s['standings'][0]['table']
+                for row in table:
+                    standings[row['team']['id']] = {
+                        'gf': row['goalsFor'] / row['playedGames'],
+                        'ga': row['goalsAgainst'] / row['playedGames'],
+                        'form': row.get('form', '')
+                    }
+        except: continue
+        
+    return matches, standings
 
-    # Forza Offensiva e Difensiva
-    h_attack = (h_stats['gf'] / h_played)
-    h_defense = (h_stats['ga'] / h_played)
-    a_attack = (a_stats['gf'] / a_played)
-    a_defense = (a_stats['ga'] / a_played)
+def get_xg(h_id, a_id, db):
+    # Recupera dati o usa default
+    h = db.get(h_id, {'gf': 1.2, 'ga': 1.2, 'form': ''})
+    a = db.get(a_id, {'gf': 1.0, 'ga': 1.0, 'form': ''})
     
-    # Modificatori Forma
-    h_form_mod = calculate_form_modifier(h_stats['form_str'])
-    a_form_mod = calculate_form_modifier(a_stats['form_str'])
-
-    # Calcolo Expected Goals (xG) per questo match
-    # xG Casa = Attacco Casa * Difesa Ospite * Fattore Campo (1.15) * Forma
-    xg_home = h_attack * a_defense * 1.15 * h_form_mod
-    # xG Ospite = Attacco Ospite * Difesa Casa * Forma
-    xg_away = a_attack * h_defense * a_form_mod
+    # Calcolo Forma (Semplificato)
+    h_f = 1 + (h['form'].count('W') * 0.05) - (h['form'].count('L') * 0.05)
+    a_f = 1 + (a['form'].count('W') * 0.05) - (a['form'].count('L') * 0.05)
     
-    # Calcolo Probabilità Percentuali
-    probs = calcola_probabilita_esatte(xg_home, xg_away)
+    # Calcolo xG
+    xg_h = h['gf'] * a['ga'] * 1.15 * h_f # 1.15 fattore campo
+    xg_a = a['gf'] * h['ga'] * a_f
     
-    # Determinazione BEST BET (La scommessa con % più alta sopra una soglia sicura)
-    best_bet = "No Bet (Troppo Incerto)"
-    best_prob = 0
-    
-    candidates = {
-        "1 Fisso": probs['1'],
-        "2 Fisso": probs['2'],
-        "1X Doppia": probs['1'] + probs['X'],
-        "X2 Doppia": probs['2'] + probs['X'],
-        "Over 2.5": probs['Over2.5'],
-        "Under 2.5": probs['Under2.5'],
-        "Gol (GG)": probs['Goal']
-    }
-    
-    # Filtro: cerchiamo la probabilità più alta > 55%
-    sorted_bets = sorted(candidates.items(), key=lambda item: item[1], reverse=True)
-    if sorted_bets[0][1] > 55:
-        best_bet = sorted_bets[0][0]
-        best_prob = sorted_bets[0][1]
-    
-    return {
-        'xg_home': xg_home,
-        'xg_away': xg_away,
-        'probs': probs,
-        'best_bet': best_bet,
-        'best_prob': best_prob
-    }
+    return xg_h, xg_a
 
 # --- INTERFACCIA ---
 
 def main():
-    st.sidebar.header("🔍 Filtri Analisi")
+    st.sidebar.image("https://cdn-icons-png.flaticon.com/512/53/53283.png", width=100)
+    st.sidebar.title("Impostazioni")
+    api_key = st.sidebar.text_input("🔑 API Key", type="password")
+    day = st.sidebar.date_input("📅 Data", datetime.now())
     
-    # 1. INPUT API KEY
-    api_key = st.sidebar.text_input("API Key football-data.org", type="password")
-    
-    # 2. SELEZIONE DATA
-    selected_date = st.sidebar.date_input("Seleziona Data Partite", datetime.now())
-    
-    st.title("📈 AI Football Probability V3")
-    st.markdown(f"Analisi probabilistica per le partite del: **{selected_date.strftime('%d/%m/%Y')}**")
+    st.title("⚽ AI Betting Suite V4")
+    st.markdown("Analisi **Multigoal**, **Combo** e **Ranking Probabilità**.")
 
     if not api_key:
-        st.warning("Inserisci l'API Key nella barra laterale.")
+        st.info("Inserisci la chiave API per iniziare.")
         return
 
-    # CARICAMENTO DATI
-    with st.spinner("Scarico calendario e classifiche..."):
-        all_matches = get_matches_by_date(api_key, selected_date)
-        
-        if not all_matches:
-            st.error("Nessuna partita trovata in questa data o errore API.")
-            return
+    with st.spinner("Analisi in corso..."):
+        matches, db = get_data(api_key, day)
+    
+    if not matches:
+        st.error("Nessuna partita trovata.")
+        return
 
-        # 3. FILTRO CAMPIONATO (Dinamico)
-        competitions = list(set([m['competition']['name'] for m in all_matches]))
-        selected_comp = st.sidebar.multiselect("Filtra Campionato", competitions, default=competitions)
-        
-        # Filtra match
-        matches = [m for m in all_matches if m['competition']['name'] in selected_comp]
-        
-        # Scarica classifiche necessarie
-        comp_ids = set([m['competition']['id'] for m in matches])
-        standings_db = {}
-        for cid in comp_ids:
-            standings_db[cid] = get_standings(api_key, cid)
+    # Filtro Competizione
+    comps = list(set([m['competition']['name'] for m in matches]))
+    sel_comp = st.sidebar.multiselect("Filtra Campionato", comps, default=comps)
+    clean_matches = [m for m in matches if m['competition']['name'] in sel_comp]
+    
+    st.write(f"Trovate **{len(clean_matches)}** partite.")
+    st.markdown("---")
 
-    st.write(f"Analisi di **{len(matches)}** partite.")
-    st.divider()
-
-    # VISUALIZZAZIONE PARTITE
-    for m in matches:
+    for m in clean_matches:
         h_name = m['homeTeam']['name']
         a_name = m['awayTeam']['name']
-        comp_name = m['competition']['name']
         
         # Analisi
-        data = analyze_match_advanced(
-            m['homeTeam']['id'], 
-            m['awayTeam']['id'], 
-            standings_db.get(m['competition']['id'], {})
-        )
-        probs = data['probs']
+        xg_h, xg_a = get_xg(m['homeTeam']['id'], m['awayTeam']['id'], db)
+        probs = genera_matrice_probabilita(xg_h, xg_a)
         
-        # LAYOUT CARD
+        # Identifica la BEST BET (Top Prob > 55%)
+        sorted_probs = sorted(probs.items(), key=lambda x: x[1], reverse=True)
+        best_bet = sorted_probs[0]
+        
+        # --- UI CARD ---
         with st.container():
-            # Intestazione Match
-            st.markdown(f"#### 🏆 {comp_name} | {h_name} vs {a_name}")
+            col_head_1, col_head_2 = st.columns([3, 1])
+            with col_head_1:
+                st.subheader(f"{h_name} 🆚 {a_name}")
+                st.caption(f"{m['competition']['name']} | xG: {xg_h:.2f} - {xg_a:.2f}")
+            with col_head_2:
+                # Box Best Bet
+                st.markdown(f"""
+                <div class="best-bet">
+                    🔥 TOP PICK<br>
+                    {best_bet[0]}<br>
+                    {best_bet[1]:.1f}%
+                </div>
+                """, unsafe_allow_html=True)
             
-            c1, c2, c3 = st.columns([1.5, 2, 1.5])
+            # TABS PER CATEGORIE
+            tab1, tab2, tab3, tab4 = st.tabs(["📊 Classifica Quote", "🏠 Principali", "🔢 Multigoal", "⚡ Combo"])
             
-            # Colonna Sinistra: Statistiche Squadre
-            with c1:
-                st.caption("xG (Gol Attesi)")
-                st.info(f"{h_name}: **{data['xg_home']:.2f}**")
-                st.warning(f"{a_name}: **{data['xg_away']:.2f}**")
-            
-            # Colonna Centrale: Percentuali
-            with c2:
-                st.caption("Probabilità Esito Finale (Poisson)")
+            with tab1:
+                st.write("Le scommesse più probabili per questo evento:")
+                # Creiamo un DataFrame per la classifica
+                df_probs = pd.DataFrame(sorted_probs, columns=["Esito", "Probabilità %"])
+                df_probs['Probabilità %'] = df_probs['Probabilità %'].round(1)
                 
-                # Barre Percentuali
-                col_1, col_x, col_2 = st.columns(3)
-                col_1.metric("1", f"{probs['1']:.1f}%")
-                col_x.metric("X", f"{probs['X']:.1f}%")
-                col_2.metric("2", f"{probs['2']:.1f}%")
-                
-                st.progress(int(probs['1']))
-                
-                st.caption("Probabilità Gol")
-                col_o, col_u, col_gg = st.columns(3)
-                col_o.metric("Over 2.5", f"{probs['Over2.5']:.1f}%")
-                col_u.metric("Under 2.5", f"{probs['Under2.5']:.1f}%")
-                col_gg.metric("Goal", f"{probs['Goal']:.1f}%")
-                
-            
-            # Colonna Destra: BEST BET
-            with c3:
-                st.markdown("### ⭐ CONSIGLIO")
-                if data['best_prob'] > 60:
-                    color = "green"
-                    risk = "ALTA PROBABILITÀ"
-                elif data['best_prob'] > 50:
-                    color = "orange"
-                    risk = "MEDIA PROBABILITÀ"
-                else:
-                    color = "red"
-                    risk = "RISCHIOSO"
-                    
-                st.markdown(f":{color}[**{data['best_bet']}**]")
-                st.markdown(f"Affidabilità: **{data['best_prob']:.1f}%**")
-                st.caption(f"Risk: {risk}")
+                # Visualizza come tabella con barre
+                st.dataframe(
+                    df_probs.head(10), # Mostra le top 10
+                    column_config={
+                        "Probabilità %": st.column_config.ProgressColumn(
+                            "Affidabilità",
+                            format="%.1f%%",
+                            min_value=0,
+                            max_value=100,
+                        ),
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
 
+            with tab2:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("1 (Casa)", f"{probs['1']:.1f}%")
+                c2.metric("X (Pareggio)", f"{probs['X']:.1f}%")
+                c3.metric("2 (Ospite)", f"{probs['2']:.1f}%")
+                st.divider()
+                c4, c5 = st.columns(2)
+                c4.metric("Goal (Entrambe)", f"{probs['Goal (GG)']:.1f}%")
+                c5.metric("Over 2.5", f"{probs['Over 2.5']:.1f}%")
+
+            with tab3:
+                st.markdown("**Totale Partita**")
+                cm1, cm2, cm3 = st.columns(3)
+                cm1.metric("1-3 Gol", f"{probs['MG 1-3']:.1f}%")
+                cm2.metric("2-4 Gol", f"{probs['MG 2-4']:.1f}%")
+                cm3.metric("2-5 Gol", f"{probs['MG 2-5']:.1f}%")
+                
+                st.markdown("**Squadre**")
+                cs1, cs2 = st.columns(2)
+                cs1.info(f"Casa 1-2 Gol: **{probs['Casa MG 1-2']:.1f}%**")
+                cs2.info(f"Ospite 1-2 Gol: **{probs['Ospite MG 1-2']:.1f}%**")
+
+            with tab4:
+                st.warning("⚠️ Le Combo richiedono alta precisione")
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    st.write(f"1 + Over 1.5: **{probs['1 + Over 1.5']:.1f}%**")
+                    st.write(f"1X + Over 1.5: **{probs['1X + Over 1.5']:.1f}%**")
+                    st.write(f"1 + Under 3.5: **{probs['1 + Under 3.5']:.1f}%**")
+                with cc2:
+                    st.write(f"2 + Over 1.5: **{probs['2 + Over 1.5']:.1f}%**")
+                    st.write(f"X2 + Under 3.5: **{probs['X2 + Under 3.5']:.1f}%**")
+            
             st.divider()
 
 if __name__ == "__main__":
