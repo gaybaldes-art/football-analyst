@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timedelta
 
 # --- CONFIGURAZIONE STILE ---
-st.set_page_config(page_title="AI Bet Master V4", layout="wide", page_icon="⚽")
+st.set_page_config(page_title="AI Bet Master V4.1", layout="wide", page_icon="⚽")
 
 # CSS Personalizzato per rendere l'interfaccia "Carina"
 st.markdown("""
@@ -119,7 +119,7 @@ def get_data(api_key, date_obj):
                     standings[row['team']['id']] = {
                         'gf': row['goalsFor'] / row['playedGames'],
                         'ga': row['goalsAgainst'] / row['playedGames'],
-                        'form': row.get('form', '')
+                        'form': row.get('form', None) # Recupera None se manca
                     }
         except: continue
         
@@ -127,12 +127,17 @@ def get_data(api_key, date_obj):
 
 def get_xg(h_id, a_id, db):
     # Recupera dati o usa default
-    h = db.get(h_id, {'gf': 1.2, 'ga': 1.2, 'form': ''})
-    a = db.get(a_id, {'gf': 1.0, 'ga': 1.0, 'form': ''})
+    h = db.get(h_id, {'gf': 1.2, 'ga': 1.2, 'form': None})
+    a = db.get(a_id, {'gf': 1.0, 'ga': 1.0, 'form': None})
     
-    # Calcolo Forma (Semplificato)
-    h_f = 1 + (h['form'].count('W') * 0.05) - (h['form'].count('L') * 0.05)
-    a_f = 1 + (a['form'].count('W') * 0.05) - (a['form'].count('L') * 0.05)
+    # --- FIX SICUREZZA PER L'ERRORE ---
+    # Se la forma è None (dati mancanti), usiamo stringa vuota "" per evitare crash
+    form_h_str = h['form'] if h['form'] is not None else ""
+    form_a_str = a['form'] if a['form'] is not None else ""
+    
+    # Calcolo Forma con i dati sicuri
+    h_f = 1 + (form_h_str.count('W') * 0.05) - (form_h_str.count('L') * 0.05)
+    a_f = 1 + (form_a_str.count('W') * 0.05) - (form_a_str.count('L') * 0.05)
     
     # Calcolo xG
     xg_h = h['gf'] * a['ga'] * 1.15 * h_f # 1.15 fattore campo
@@ -148,7 +153,7 @@ def main():
     api_key = st.sidebar.text_input("🔑 API Key", type="password")
     day = st.sidebar.date_input("📅 Data", datetime.now())
     
-    st.title("⚽ AI Betting Suite V4")
+    st.title("⚽ AI Betting Suite V4.1")
     st.markdown("Analisi **Multigoal**, **Combo** e **Ranking Probabilità**.")
 
     if not api_key:
